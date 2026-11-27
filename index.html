@@ -1,0 +1,211 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>なんでもカウンター</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;padding:24px 18px;
+  background:#101114;color:white;
+  font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+}
+h1{font-size:27px;margin-bottom:5px}
+.sub{color:#999;font-size:13px}
+.panel{
+  background:#202126;border-radius:18px;
+  padding:18px;margin-top:20px;
+}
+.stage{
+  position:relative;width:100%;
+  overflow:hidden;border-radius:14px;
+  background:#080808;min-height:220px;
+}
+video,img{width:100%;display:block}
+canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+button,.upload{
+  border:0;border-radius:12px;padding:15px;
+  font-size:15px;font-weight:bold;
+  background:white;color:#111;
+  width:100%;margin-top:12px;
+}
+button:disabled{opacity:.4}
+.upload{text-align:center;display:block;cursor:pointer}
+input{display:none}
+.count{
+  font-size:65px;font-weight:800;
+  text-align:center;margin:8px;
+}
+.center{text-align:center}
+.muted{color:#999;font-size:13px}
+#results{line-height:2}
+.status{color:#a5e5b0;font-size:13px}
+</style>
+</head>
+<body>
+<h1>なんでもカウンター</h1>
+<div class="sub">カメラに映ったものをAIが自動で数える</div>
+
+<div class="panel">
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <img id="photo" style="display:none">
+    <canvas id="canvas"></canvas>
+  </div>
+  <button id="start">カメラを起動</button>
+  <label class="upload">
+    写真から数える
+    <input type="file" id="file" accept="image/*">
+  </label>
+  <button id="stop">カメラ停止</button>
+  <p class="status" id="status">AIモデルを読み込み中...</p>
+</div>
+
+<div class="panel center">
+  <div class="muted">認識した物体の合計</div>
+  <div class="count" id="total">0</div>
+  <div class="muted">個</div>
+</div>
+
+<div class="panel">
+  <b>認識結果</b>
+  <div id="results">まだ認識していません</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+<script>
+const video=document.getElementById('video');
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+const photo=document.getElementById('photo');
+const status=document.getElementById('status');
+const total=document.getElementById('total');
+const results=document.getElementById('results');
+
+let model=null;
+let stream=null;
+let running=false;
+let busy=false;
+
+async function loadModel(){
+ try{
+  status.textContent='AIを準備しています...';
+  model=await cocoSsd.load();
+  status.textContent='AI準備完了！カメラを起動できます';
+ }catch(e){
+  status.textContent='AIの読み込みに失敗しました。通信を確認してください';
+ }
+}
+
+function resizeCanvas(w,h){
+ canvas.width=w;
+ canvas.height=h;
+}
+
+function draw(predictions){
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ const found=predictions.filter(p=>p.score>.55);
+
+ found.forEach(p=>{
+  const [x,y,w,h]=p.bbox;
+  ctx.strokeStyle='#00ff9d';
+  ctx.lineWidth=3;
+  ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle='#00ff9d';
+  ctx.font='bold 15px sans-serif';
+  ctx.fillText(p.class+' '+Math.round(p.score*100)+'%',x,Math.max(18,y-5));
+ });
+
+ total.textContent=found.length;
+
+ const groups={};
+ found.forEach(p=>{
+  groups[p.class]=(groups[p.class]||0)+1;
+ });
+
+ results.innerHTML=Object.entries(groups).map(
+  ([name,count])=>name+'：'+count+'個'
+ ).join('<br>')||'物体を認識できません';
+
+}
+
+async function detect(source){
+ if(!model||busy)return;
+ busy=true;
+ try{
+  const predictions=await model.detect(source);
+  draw(predictions);
+ }catch(e){
+  console.log(e);
+ }
+ busy=false;
+}
+
+async function startCamera(){
+ if(!model){
+  status.textContent='AIを読み込み中です。少し待ってね';
+  return;
+ }
+ try{
+  stream=await navigator.mediaDevices.getUserMedia({
+   video:{facingMode:'environment'},
+   audio:false
+  });
+  video.srcObject=stream;
+  photo.style.display='none';
+  video.style.display='block';
+  await video.play();
+  resizeCanvas(video.videoWidth,video.videoHeight);
+  running=true;
+  status.textContent='リアルタイム認識中';
+  loop();
+ }catch(e){
+  status.textContent='カメラを使えません。ブラウザの許可を確認してください';
+ }
+}
+
+async function loop(){
+ if(!running)return;
+ if(video.readyState>=2)await detect(video);
+ requestAnimationFrame(loop);
+}
+
+function stopCamera(){
+ running=false;
+ if(stream){
+  stream.getTracks().forEach(t=>t.stop());
+  stream=null;
+ }
+ video.srcObject=null;
+ status.textContent='カメラ停止中';
+}
+
+document.getElementById('start').onclick=startCamera;
+document.getElementById('stop').onclick=stopCamera;
+
+document.getElementById('file').onchange=async e=>{
+ const file=e.target.files[0];
+ if(!file)return;
+ stopCamera();
+ const url=URL.createObjectURL(file);
+ photo.src=url;
+ photo.style.display='block';
+ video.style.display='none';
+
+ photo.onload=async()=>{
+  resizeCanvas(photo.naturalWidth,photo.naturalHeight);
+  status.textContent='画像を解析中...';
+  await detect(photo);
+  status.textContent='画像の解析完了';
+  URL.revokeObjectURL(url);
+ };
+};
+
+loadModel();
+</script>
+</body>
+</html>
